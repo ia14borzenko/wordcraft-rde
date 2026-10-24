@@ -46,3 +46,9 @@ zip = { workspace = true }
 [build-dependencies]
 serde_json = { workspace = true }
 toml = "1"
+
+[features]
+# RDE fork addition: expose a chrome-less document view (`WordApp::doc_view_ui`)
+# so a host application can embed the editor in its own dock/toolbar.
+# Off by default: upstream behaviour and tests are unchanged.
+rde-docview = []

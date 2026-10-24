@@ -8905,3 +8905,44 @@ mod tests {
         assert!(h.state().session.view.read_mode && shown(&h, "Focus"), "Immersive Reader keeps the status bar");
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RDE fork addition: chrome-less document view (feature `rde-docview`)
+//
+// The host application (RDE) embeds the editor in its own dock and supplies its
+// own toolbar, status bar and menus. `doc_view_ui` draws only the editing
+// surface: the page canvas plus the dialogs, popups and shortcuts the canvas
+// needs — no WordCraft title bar, ribbon, panes or status bar.
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(feature = "rde-docview")]
+impl WordApp {
+    /// RDE: draw just the document editing surface into `ui`.
+    ///
+    /// Call [`WordApp::logic`] once per frame before this, as the desktop app does.
+    /// The canvas takes the keyboard after a click, exactly as in the full app.
+    pub fn doc_view_ui(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        i18n::set_current(i18n::Lang::from_pref(&self.ui.language));
+        // Fonts installed by `logic` take effect on the next frame.
+        if self.fonts_frames < 2 {
+            self.fonts_frames += 1;
+            ctx.request_repaint();
+            return;
+        }
+        self.escape_free = self.dialog.is_none() && !egui::Popup::is_any_open(&ctx);
+        let fill = theme::Tokens::get(&ctx).canvas;
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(fill)).show(ui, |ui| {
+            if self.has_document() {
+                canvas::show(self, ui);
+            }
+        });
+        content_controls::popup(self, &ctx);
+        dialogs::show(self, &ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        file_browser::show(self, &ctx);
+        colors::show(self, &ctx);
+        keys::global_shortcuts(self, &ctx);
+        self.refocus_after_chrome_click(&ctx);
+        self.report_dirty();
+    }
+}
