@@ -980,7 +980,7 @@ impl Writer<'_> {
 
     /// A picture's `pic:pic` (the image in `media/{file}`), at `off` in its group (or 0, 0).
     fn pic(&mut self, w: &mut W, o: &InlineObject, file: &str, off: (f32, f32), rels: &mut PartRels) {
-        let InlineObject::Image { media, w: iw, h: ih, alt, crop, float, .. } = o else { return };
+        let InlineObject::Image { media, w: iw, h: ih, alt, crop, float, blip_ext, .. } = o else { return };
         let rid = rels.add(rt::IMAGE, &format!("media/{file}"), false);
         self.used_media.insert(media.clone());
         w.open("pic:pic", &[]);
@@ -991,7 +991,16 @@ impl Writer<'_> {
         w.close("pic:cNvPicPr");
         w.close("pic:nvPicPr");
         w.open("pic:blipFill", &[]);
-        w.empty("a:blip", &[("r:embed", &rid)]);
+        // A blip's kept extension list (e.g. a vector `asvg:svgBlip`) goes back inside it, with
+        // fresh relationship ids and the parts it names written again (see `read::embed`).
+        match blip_ext.as_deref().and_then(|src| self.embedded_xml(src, rels, None)) {
+            Some(ext) => {
+                w.open("a:blip", &[("r:embed", &rid)]);
+                w.raw(&ext);
+                w.close("a:blip");
+            }
+            None => w.empty("a:blip", &[("r:embed", &rid)]),
+        }
         if crop.iter().any(|c| *c > 0.0) {
             let c = |v: f32| n((wordcraft_geom::finite(v).clamp(0.0, 1.0) * 100_000.0).round() as i64);
             w.empty("a:srcRect", &[("l", &c(crop[0])), ("t", &c(crop[1])), ("r", &c(crop[2])), ("b", &c(crop[3]))]);

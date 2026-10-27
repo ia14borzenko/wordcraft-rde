@@ -1305,6 +1305,16 @@ impl Reader<'_> {
         let blip = pic.find("a:blip")?;
         float.set_spin(xfrm_spin(pic.find("pic:spPr")));
         let media = blip.attr("r:embed").and_then(|id| self.media_for(rels, id))?;
+        // A blip's extension list names what the model doesn't (a picture's vector source is an
+        // `asvg:svgBlip`): keep it whole, with the parts it refers to, so a save writes the vector
+        // data back instead of only the raster preview (see `read::embed`).
+        let blip_ext = blip.child("a:extLst").and_then(|ext| {
+            let kept = self.keep_embedded(ext, rels, &[]);
+            if kept.is_none() {
+                log::warn!("docx: a picture's blip extensions refer to missing parts; they are dropped");
+            }
+            kept
+        });
         let mut crop = [0.0f32; 4];
         if let Some(sr) = pic.find("a:srcRect") {
             for (i, n) in ["l", "t", "r", "b"].iter().enumerate() {
@@ -1315,7 +1325,7 @@ impl Reader<'_> {
                 }
             }
         }
-        Some(InlineObject::Image { media, w, h, alt, float, crop, ole: None })
+        Some(InlineObject::Image { media, w, h, alt, float, crop, ole: None, blip_ext })
     }
 
     /// A `wpg:wgp` group (`w` × `h`): its pictures, shapes and text boxes, nested groups
@@ -1712,7 +1722,7 @@ impl Reader<'_> {
             let id = img.attr("r:id").or_else(|| img.attr("r:pict"))?;
             let media = self.media_for(rels, id)?;
             let alt = shape.attr("alt").or_else(|| img.attr("o:title")).unwrap_or("").to_string();
-            return Some(InlineObject::Image { media, w, h, alt, float, crop: [0.0; 4], ole: None });
+            return Some(InlineObject::Image { media, w, h, alt, float, crop: [0.0; 4], ole: None, blip_ext: None });
         }
         // The shapetype the shape is drawn from (its `type`, ECMA-376 Part 4 VML), when written in
         // the same picture: what the shape leaves out, it takes from there.

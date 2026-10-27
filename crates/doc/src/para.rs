@@ -457,6 +457,12 @@ pub enum InlineObject {
         /// [`crate::graphic::Embedded`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ole: Option<std::sync::Arc<crate::graphic::Embedded>>,
+        /// The picture's `a:blip` extension list (`a:extLst`) kept from a file, e.g. an
+        /// `asvg:svgBlip` naming the vector source of a picture whose raster preview is `media`.
+        /// Saving writes it back with the parts it refers to (kept in
+        /// [`crate::Document::passthrough`]). See [`crate::graphic::Embedded`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blip_ext: Option<std::sync::Arc<crate::graphic::Embedded>>,
     },
     /// A chart or SmartArt diagram (see [`crate::graphic`]).
     Graphic {

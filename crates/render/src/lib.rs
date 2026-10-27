@@ -1651,6 +1651,8 @@ mod tests {
             float: Default::default(),
             crop: [0.0; 4],
             ole: None,
+
+            blip_ext: None,
         };
         hp.insert_object(0, obj, &Default::default()).unwrap();
         let id = d.add_part(wordcraft_doc::PartKind::Header, vec![wordcraft_doc::para_block(hp)]);
@@ -1965,6 +1967,8 @@ mod tests {
             float: Default::default(),
             crop: [0.0; 4],
             ole: None,
+
+            blip_ext: None,
         };
         p.insert_object(0, obj, &Default::default()).unwrap();
         d.body = vec![wordcraft_doc::para_block(p)];
@@ -2008,6 +2012,8 @@ mod tests {
                     float: Default::default(),
                     crop,
                     ole: None,
+
+                    blip_ext: None,
                 };
                 p.insert_object(0, obj, &Default::default()).unwrap();
                 d.body = vec![wordcraft_doc::para_block(p)];
@@ -2045,6 +2051,8 @@ mod tests {
             float: Default::default(),
             crop: [0.0; 4],
             ole: None,
+
+            blip_ext: None,
         };
         p.insert_object(0, obj, &Default::default()).unwrap();
         d.body = vec![wordcraft_doc::para_block(p)];
@@ -2091,6 +2099,8 @@ mod tests {
             float: Default::default(),
             crop: [0.0; 4],
             ole: None,
+
+            blip_ext: None,
         };
         p.insert_object(0, obj, &Default::default()).unwrap();
         d.body = vec![wordcraft_doc::para_block(p)];
@@ -2125,6 +2135,8 @@ mod tests {
             float: Default::default(),
             crop: [0.0; 4],
             ole: None,
+
+            blip_ext: None,
         };
         p.insert_object(0, obj, &Default::default()).unwrap();
         d.body = vec![wordcraft_doc::para_block(p)];

@@ -34,6 +34,11 @@ pub const NAMESPACES: &[(&str, &str)] = &[
     ("wpc", "http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas"),
     ("dgm", "http://schemas.openxmlformats.org/drawingml/2006/diagram"),
     ("dsp", "http://schemas.microsoft.com/office/drawing/2008/diagram"),
+    // Office drawing extensions that ride in an `a:extLst` (e.g. a picture's vector
+    // `asvg:svgBlip`, or the `a14:imgProps` of Word 2010 picture effects): kept whole when a
+    // blip's extension list is preserved (see `read::embed`).
+    ("asvg", "http://schemas.microsoft.com/office/drawing/2016/SVG/main"),
+    ("a14", "http://schemas.microsoft.com/office/drawing/2010/main"),
     ("m", "http://schemas.openxmlformats.org/officeDocument/2006/math"),
     ("v", "urn:schemas-microsoft-com:vml"),
     ("o", "urn:schemas-microsoft-com:office:office"),
