@@ -15,6 +15,7 @@ mod dib;
 mod emf;
 mod geom;
 mod place;
+mod text;
 mod wmf;
 
 #[cfg(test)]

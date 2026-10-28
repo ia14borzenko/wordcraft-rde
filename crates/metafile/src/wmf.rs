@@ -2,13 +2,17 @@
 //! records of (size in 16-bit words, function, parameters). Parameters are read at byte 6 of each record.
 
 use crate::bytes::Bytes;
-use crate::canvas::{Brush, Canvas, Obj, Pen, colorref};
+use crate::canvas::{Brush, Canvas, Font, Obj, Pen, colorref};
 use crate::dib;
 use crate::geom::{self, ArcKind, P};
 use crate::{Error, Frame, MAX_PATH_OPS};
 
 const PLACEABLE_KEY: u32 = 0x9AC6_CDD7;
 const DEFAULT_INCH: f64 = 1440.0;
+/// META_EXTTEXTOUT options (MS-WMF 2.1.2.2): fill the rectangle with the background colour, and clip
+/// the text to it.
+const ETO_OPAQUE: u16 = 0x0002;
+const ETO_CLIPPED: u16 = 0x0004;
 
 pub(crate) fn is_wmf(b: Bytes) -> bool {
     if b.u32(0) == Some(PLACEABLE_KEY) {
@@ -128,14 +132,21 @@ fn record(cv: &mut Canvas, func: u16, r: Bytes) {
         }),
         0x02FA => create_pen(cv, r),
         0x02FC => create_brush(cv, r),
-        // Fonts, palettes, pattern brushes and regions take a handle slot too, so later SELECTOBJECT
+        0x02FB => create_font(cv, r),
+        // Palettes, pattern brushes and regions take a handle slot too, so later SELECTOBJECT
         // handles count them; selecting one draws nothing.
-        0x02FB | 0x00F7 | 0x01F9 | 0x0142 | 0x06FF => {
+        0x00F7 | 0x01F9 | 0x0142 | 0x06FF => {
             cv.add_object(None, Obj::Other);
             Some(())
         }
         0x012D => r.u16(6).map(|h| cv.select(wmf_handle(h))),
         0x01F0 => r.u16(6).map(|h| cv.delete_object(u32::from(h))),
+        // Text state and the two text records (see MS-WMF 2.3.3.5 and 2.3.3.20).
+        0x012E => r.u16(6).map(|a| cv.set_text_align(u32::from(a))),
+        0x0209 => r.u32(6).map(|c| cv.set_text_color(colorref(c))),
+        0x0201 => r.u32(6).map(|c| cv.set_bk_color(colorref(c))),
+        0x0521 => text_out(cv, r),
+        0x0A32 => ext_text_out(cv, r),
         // STRETCHDIB: rop(4) usage(2) srcH srcW ySrc xSrc destH destW yDest xDest, then the DIB.
         0x0F43 => {
             let rop = r.u32(6).unwrap_or(0);
@@ -174,6 +185,79 @@ fn create_brush(cv: &mut Canvas, r: Bytes) -> Option<()> {
     let color = r.u32(8)?;
     cv.add_object(None, Obj::Brush(Brush { style: u32::from(style), color: colorref(color) }));
     Some(())
+}
+
+/// CREATEFONTINDIRECT: height, width, escapement, orientation and weight (16-bit each), the style and
+/// charset bytes, then a NUL-terminated (or NUL-padded) 32-byte ANSI face name. A negative height is
+/// the character height, which the canvas keeps; the charset picks the code page of later text
+/// records.
+fn create_font(cv: &mut Canvas, r: Bytes) -> Option<()> {
+    let height = i32::from(r.i16(6)?);
+    let escapement = i32::from(r.i16(10)?);
+    let weight = i32::from(r.i16(14)?);
+    let italic = *r.0.get(16)? != 0;
+    let charset = *r.0.get(19)?;
+    let name = r.slice(24, 32)?;
+    // The name ends at its NUL; writers leave junk in the padding after it (MathType does).
+    let end = name.iter().position(|b| *b == 0).unwrap_or(name.len());
+    let name = name.get(..end).unwrap_or_default();
+    let mut face = [0u16; 32];
+    for (slot, b) in face.iter_mut().zip(name) {
+        *slot = u16::from(*b);
+    }
+    cv.add_object(None, Obj::Font(Font { height, escapement, weight, italic, face, charset }));
+    Some(())
+}
+
+/// META_TEXTOUT: the length in bytes, the bytes (padded to a word), then the y and x start.
+fn text_out(cv: &mut Canvas, r: Bytes) -> Option<()> {
+    let n = usize::from(r.u16(6)?);
+    let bytes = r.slice(8, n)?;
+    let at = xy16(r, 8usize.checked_add(n.checked_add(n & 1)?)?)?;
+    cv.text_bytes(at, bytes, &[]);
+    Some(())
+}
+
+/// META_EXTTEXTOUT: y, x, the length in bytes, the options, an optional rectangle when ETO_OPAQUE or
+/// ETO_CLIPPED is set, the bytes (padded to a word) and one 16-bit advance per character.
+fn ext_text_out(cv: &mut Canvas, r: Bytes) -> Option<()> {
+    let at = xy16(r, 6)?;
+    let n = usize::from(r.u16(10)?);
+    let options = r.u16(12)?;
+    let mut off = 14usize;
+    if options & (ETO_OPAQUE | ETO_CLIPPED) != 0 {
+        let [l, t, rr, b] = rect_object(r, off)?;
+        // ETO_OPAQUE paints the rectangle with the background colour behind the text.
+        if options & ETO_OPAQUE != 0 {
+            cv.fill_text_rect([l, t, rr, b]);
+        }
+        off = off.checked_add(8)?;
+    }
+    let bytes = r.slice(off, n)?;
+    off = off.checked_add(n.checked_add(n & 1)?)?;
+    let dx = advances(r, off, n)?;
+    cv.text_bytes(at, bytes, &dx);
+    Some(())
+}
+
+/// The Rect Object of a text record (MS-WMF 2.2.2.18): left, top, right, bottom.
+fn rect_object(r: Bytes, off: usize) -> Option<[f64; 4]> {
+    Some([
+        f64::from(r.i16(off)?),
+        f64::from(r.i16(off.checked_add(2)?)?),
+        f64::from(r.i16(off.checked_add(4)?)?),
+        f64::from(r.i16(off.checked_add(6)?)?),
+    ])
+}
+
+/// The Dx array of a text record: one signed 16-bit advance per character.
+fn advances(r: Bytes, off: usize, n: usize) -> Option<Vec<f64>> {
+    let raw = r.slice(off, n.checked_mul(2)?)?;
+    let mut dx = Vec::with_capacity(n);
+    for c in raw.as_chunks::<2>().0 {
+        dx.push(f64::from(i16::from_le_bytes(*c)));
+    }
+    Some(dx)
 }
 
 /// (x, y) from a Y-then-X pair stored at `off`.

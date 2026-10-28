@@ -62,6 +62,7 @@ pub(crate) struct Brush {
 
 /// A logical font (EMF LogFont): height in logical units (negative = character height, positive =
 /// cell height, 0 = default), escapement in tenths of a degree, face name as UTF-16 (NUL-padded).
+/// `charset` names the code page of a WMF text record's bytes (EMF text is UTF-16 and ignores it).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct Font {
     pub height: i32,
@@ -69,6 +70,7 @@ pub(crate) struct Font {
     pub weight: i32,
     pub italic: bool,
     pub face: [u16; 32],
+    pub charset: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -215,6 +217,7 @@ struct Saved {
     font: Option<Font>,
     text_color: [u8; 4],
     text_align: u32,
+    bk_color: [u8; 4],
 }
 
 pub(crate) struct Canvas {
@@ -244,6 +247,8 @@ pub(crate) struct Canvas {
     text_color: [u8; 4],
     /// SETTEXTALIGN flags (TA_*).
     text_align: u32,
+    /// SETBKCOLOR: the colour an ETO_OPAQUE text rectangle fills with.
+    bk_color: [u8; 4],
     pos: P,
     in_path: bool,
     path: Vec<Op>,
@@ -270,6 +275,7 @@ impl Canvas {
             font: None,
             text_color: [0, 0, 0, 255],
             text_align: 0,
+            bk_color: [255, 255, 255, 255],
             pos: (0.0, 0.0),
             in_path: false,
             path: Vec::new(),
@@ -374,6 +380,7 @@ impl Canvas {
                 font: self.font,
                 text_color: self.text_color,
                 text_align: self.text_align,
+                bk_color: self.bk_color,
             });
         } else {
             self.full = true;
@@ -394,6 +401,7 @@ impl Canvas {
         self.font = s.font;
         self.text_color = s.text_color;
         self.text_align = s.text_align;
+        self.bk_color = s.bk_color;
     }
 
     /// Stores an object in `slot` (EMF index), or in the lowest free slot (WMF handle table).
@@ -641,6 +649,24 @@ impl Canvas {
         self.text_align = a;
     }
 
+    /// SETBKCOLOR: the background colour an ETO_OPAQUE text rectangle fills with.
+    pub fn set_bk_color(&mut self, c: [u8; 4]) {
+        self.bk_color = c;
+    }
+
+    /// Fills a WMF text record's ETO_OPAQUE rectangle (logical units) with the background colour.
+    pub fn fill_text_rect(&mut self, rect: [f64; 4]) {
+        self.fill_rect_with(rect, self.bk_color);
+    }
+
+    /// Draws the bytes of a WMF text record at the logical point `at`, decoded with the selected
+    /// font's charset, and `dx` per-character advances (MS-WMF 2.3.3.5, see [`crate::text`]).
+    pub fn text_bytes(&mut self, at: P, bytes: &[u8], dx: &[f64]) {
+        let (charset, face) = self.font.map_or((0, [0; 32]), |f| (f.charset, f.face));
+        let text = crate::text::decode(bytes, charset, &face);
+        self.text(at, text, dx);
+    }
+
     /// Draws `text` at the logical point `at` (the current point with TA_UPDATECP) with the selected
     /// font, text colour and alignment. `dx` holds per-character logical advances (empty for the
     /// font's own); with TA_UPDATECP the current point moves past them.
@@ -648,7 +674,7 @@ impl Canvas {
         if text.is_empty() || self.in_path {
             return;
         }
-        let font = self.font.unwrap_or(Font { height: 0, escapement: 0, weight: 400, italic: false, face: [0; 32] });
+        let font = self.font.unwrap_or(Font { height: 0, escapement: 0, weight: 400, italic: false, face: [0; 32], charset: 0 });
         let at = if self.text_align & TA_UPDATECP != 0 { self.pos } else { at };
         if self.text_align & TA_UPDATECP != 0 {
             self.pos = (at.0 + dx.iter().sum::<f64>(), at.1);

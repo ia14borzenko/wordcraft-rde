@@ -2,7 +2,7 @@
 
 use crate::canvas::Canvas;
 use crate::dib::Rgba;
-use crate::{Error, Item, MAX_BYTES, MAX_ITEMS, Seg, is_metafile, parse};
+use crate::{Error, HAlign, Item, MAX_BYTES, MAX_ITEMS, Picture, Seg, VAlign, is_metafile, parse};
 
 fn h16(v: i32) -> Vec<u8> {
     (v as i16).to_le_bytes().to_vec()
@@ -523,7 +523,7 @@ fn bitblt_rec(rop: u32, dst: [u32; 4], info: &[u8], bits: &[u8]) -> Vec<u8> {
 fn wmf_font_takes_an_object_slot_so_handles_line_up() {
     // The font is handle 0, so the pen created after it is handle 1.
     let recs = [
-        wrec(0x02FB, &[0u8; 18]),
+        wfont(-100, 400, false, 0, "Times New Roman"),
         wrec(0x02FA, &cat(vec![h16(0), h16(4), h16(0), h32(0x0000_FF00)])),
         wrec(0x012D, &h16(1)),
         wrec(0x0325, &cat(vec![h16(2), h16(0), h16(0), h16(50), h16(0), h16(50)])),
@@ -1052,4 +1052,148 @@ fn plain_wmf_target_comes_from_a_window_that_was_read() {
     assert_eq!((p.width, p.height), (200.0, 100.0));
     let (x0, y0, x1, y1) = rect_extent(&p.items[0]);
     assert!(close(x0, 0.0) && close(y0, 0.0) && close(x1, 200.0) && close(y1, 100.0), "{x0} {y0} {x1} {y1}");
+}
+
+// ---- text records ----
+
+/// A CREATEFONTINDIRECT record (MS-WMF 2.3.1.8): height and weight (a negative height is the
+/// character height), italic, charset and a face name; the unused fields are zero.
+fn wfont(height: i16, weight: i16, italic: bool, charset: u8, face: &str) -> Vec<u8> {
+    let mut p = cat(vec![h16(i32::from(height)), h16(0), h16(0), h16(0), h16(i32::from(weight))]);
+    p.extend([u8::from(italic), 0, 0, charset, 0, 0, 0, 0]);
+    let mut name = face.as_bytes().to_vec();
+    name.resize(32, 0);
+    p.extend(name);
+    wrec(0x02FB, &p)
+}
+
+/// An EXTTEXTOUT record (MS-WMF 2.3.3.5) without a rectangle: y, x, the bytes and one advance per
+/// character.
+fn wexttext(y: i16, x: i16, text: &[u8], dx: &[i16]) -> Vec<u8> {
+    let mut p = cat(vec![h16(i32::from(y)), h16(i32::from(x)), h16(text.len() as i32), h16(0)]);
+    let mut s = text.to_vec();
+    if !s.len().is_multiple_of(2) {
+        s.push(0);
+    }
+    p.extend(s);
+    p.extend(dx.iter().flat_map(|d| h16(i32::from(*d))));
+    wrec(0x0A32, &p)
+}
+
+/// A picture from a WMF whose placeable bounds are 1000 x 200 logical units at 1440 per inch: one
+/// logical unit is 0.05 points, so lengths divide by 20.
+fn wmf_picture(recs: &[Vec<u8>]) -> Picture {
+    parse(&wmf(recs, Some([0, 0, 1000, 200]))).expect("parse")
+}
+
+/// The text runs of a picture.
+fn texts(p: &Picture) -> Vec<&crate::Text> {
+    p.items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Text(t) => Some(t),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn wmf_ext_text_out_draws_a_text_run() {
+    // TA_UPDATECP draws at the current point (the MOVETO), a negative height is the character height,
+    // and the dx array gives each character's advance: 100 and 48 logical units are 5 and 2.4 points.
+    let recs = [
+        wrec(0x012E, &h16(0x19)),
+        wrec(0x0214, &cat(vec![h16(100), h16(200)])),
+        wfont(-100, 700, true, 204, "Times New Roman"),
+        wrec(0x012D, &h16(0)),
+        wexttext(0, 0, &[0xEF], &[48]),
+    ];
+    let p = wmf_picture(&recs);
+    let t = texts(&p)[0];
+    assert_eq!(t.text, "п");
+    assert_eq!(t.font, "Times New Roman");
+    assert_eq!((t.x, t.y), (10.0, 5.0));
+    assert_eq!(t.size, 5.0);
+    assert_eq!(t.dx, [2.4]);
+    assert!(t.bold && t.italic);
+    assert_eq!((t.halign, t.valign), (HAlign::Left, VAlign::Baseline));
+    assert_eq!(t.color, [0, 0, 0, 255]);
+}
+
+#[test]
+fn wmf_text_decodes_the_fonts_charset() {
+    let decode = |font: Vec<u8>, bytes: &[u8]| -> String {
+        let dx = vec![0i16; bytes.len()];
+        let recs = [font, wrec(0x012D, &h16(0)), wexttext(100, 200, bytes, &dx)];
+        let p = wmf_picture(&recs);
+        texts(&p).first().map(|t| t.text.clone()).unwrap_or_default()
+    };
+    // RUSSIAN charset is Windows-1251, SYMBOL the Adobe Symbol encoding (by charset and by face), and
+    // ANSI Windows-1252; a trailing NUL (some writers count the terminator) is dropped.
+    assert_eq!(decode(wfont(-100, 400, false, 204, "Times New Roman"), &[0xEF, 0xF2]), "пт");
+    assert_eq!(decode(wfont(-100, 400, false, 2, "Symbol"), &[0xA3, 0x74]), "≤τ");
+    assert_eq!(decode(wfont(-100, 400, false, 1, "Symbol"), &[0xA3, 0x74]), "≤τ");
+    assert_eq!(decode(wfont(-100, 400, false, 0, "Arial"), &[0x80]), "€");
+    assert_eq!(decode(wfont(-100, 400, false, 238, "Arial"), &[0x8A]), "Š");
+    assert_eq!(decode(wfont(-100, 400, false, 0, "Arial"), &[b'A', 0]), "A");
+    // MathType's MT Extra dot-above accent, then the untabled character as its Latin code.
+    assert_eq!(decode(wfont(-100, 400, false, 1, "MT Extra"), &[0x26]), "\u{02D9}");
+    assert_eq!(decode(wfont(-100, 400, false, 1, "MT Extra"), &[0x2B]), "+");
+}
+
+#[test]
+fn wmf_text_out_draws_the_string_before_the_point() {
+    // META_TEXTOUT: the count, the bytes (padded to a word), then y and x.
+    let mut p = cat(vec![h16(3)]);
+    p.extend(b"cos");
+    p.push(0);
+    p.extend(cat(vec![h16(100), h16(200)]));
+    let recs = [wfont(-100, 400, false, 0, "Times New Roman"), wrec(0x012D, &h16(0)), wrec(0x0521, &p)];
+    let pic = wmf_picture(&recs);
+    let t = texts(&pic)[0];
+    assert_eq!(t.text, "cos");
+    assert_eq!((t.x, t.y), (10.0, 5.0));
+}
+
+#[test]
+fn wmf_opaque_text_fills_its_rectangle_with_the_background_colour() {
+    // ETO_OPAQUE paints the record's rectangle (left, top, right, bottom) with SETBKCOLOR first: a
+    // red 400 x 100 logical unit box (20 x 5 points), then the text.
+    let mut p = cat(vec![h16(100), h16(200), h16(1), h16(2)]);
+    p.extend(cat(vec![h16(0), h16(0), h16(400), h16(100)]));
+    p.extend(b"A\0");
+    p.extend(h16(48));
+    let recs = [wrec(0x0201, &h32(0x0000_00FF)), wfont(-100, 400, false, 0, "Times New Roman"), wrec(0x012D, &h16(0)), wrec(0x0A32, &p)];
+    let pic = wmf_picture(&recs);
+    let (_, fill, stroke, _) = path_segs(&pic.items[0]);
+    assert_eq!(fill, Some([255, 0, 0, 255]));
+    assert_eq!(stroke, None);
+    assert_eq!(texts(&pic)[0].text, "A");
+}
+
+#[test]
+fn wmf_text_with_ta_updatecp_advances_the_current_point() {
+    // Two runs at the same zero record coordinates: the second draws where the first's dx left the
+    // current point (100 logical units, 5 points, on).
+    let recs = [
+        wrec(0x012E, &h16(0x19)),
+        wrec(0x0214, &cat(vec![h16(100), h16(200)])),
+        wfont(-100, 400, false, 0, "Times New Roman"),
+        wrec(0x012D, &h16(0)),
+        wexttext(0, 0, b"A", &[100]),
+        wexttext(0, 0, b"B", &[100]),
+    ];
+    let p = wmf_picture(&recs);
+    let ts = texts(&p);
+    assert_eq!((ts[0].x, ts[1].x), (10.0, 15.0));
+    assert_eq!((ts[0].y, ts[1].y), (5.0, 5.0));
+}
+
+#[test]
+fn truncated_text_records_draw_nothing_and_do_not_panic() {
+    // A font record too short for its face, text records whose fields run past the record, and state
+    // records with no parameters: all skipped, and the parse still succeeds.
+    let recs = [wrec(0x02FB, &[0u8; 10]), wrec(0x0A32, &h16(1)), wrec(0x0521, &h16(9)), wrec(0x0209, &[]), wrec(0x012E, &[]), wrec(0x0201, &[])];
+    let p = parse(&wmf(&recs, Some([0, 0, 100, 100]))).expect("parse");
+    assert!(p.items.is_empty(), "{:?}", p.items);
 }
