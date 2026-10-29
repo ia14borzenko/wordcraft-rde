@@ -357,6 +357,9 @@ pub struct ParaLayout {
     /// Sum of line heights (without space before/after).
     pub height: f32,
     pub text_len: usize,
+    /// Текст абзаца (RDE: разбор пунктуации после display-формулы при разбиении на строки,
+    /// ADR-0019); тот же, по чьим байтовым смещениям считаются `clusters`.
+    pub text: String,
     /// Paragraph contains fields whose text depends on the page.
     pub has_page_fields: bool,
     /// Note references (part id) in this paragraph, by cluster index.
@@ -1895,6 +1898,7 @@ pub fn layout_para(p: &Paragraph, env: &ParaEnv) -> ParaLayout {
         label,
         height: 0.0,
         text_len: p.text.len(),
+        text: p.text.clone(),
         has_page_fields,
         notes,
         issues: env.proofing.map(|o| proof_issues(p, &runs, &o, env.typing_word, is_list_item(doc, p))).unwrap_or_default(),
@@ -2344,7 +2348,13 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                 }
                 // RDE: номер `(n)` справа — после display-формулы строка продолжается табом
                 // (right-numbered без таблицы); таб уводит номер к правой границе текста.
-                if j < n && pl.clusters.get(j).is_some_and(|c| c.kind == ClKind::Tab) {
+                // RDE (ADR-0019): пунктуация после формулы (`,` `.` `;` …) остаётся на той же
+                // строке сразу за формулой, если дальше идёт таб к номеру.
+                let mut after = j;
+                while after < n && pl.clusters.get(after).is_some_and(|c| cluster_is_punctuation(pl, c)) {
+                    after += 1;
+                }
+                if after < n && pl.clusters.get(after).is_some_and(|c| c.kind == ClKind::Tab) {
                     continue;
                 }
                 end = if j >= n { LineEnd::Para } else { LineEnd::Wrap };
@@ -2946,6 +2956,22 @@ fn hyphenation_points(text: &str, to_para: impl Fn(usize) -> Option<usize>, pl: 
 
 fn pl_text_at(c: &Cluster) -> bool {
     c.dot
+}
+
+/// Пунктуация/пробел в кластере (RDE ADR-0019): после display-формулы така€ пунктуация не
+/// разрывает строку — за ней ожидается таб к номеру. Текст берётся по байтовому диапазону кластера.
+fn cluster_is_punctuation(pl: &ParaLayout, c: &Cluster) -> bool {
+    if matches!(c.kind, ClKind::Space) {
+        return true;
+    }
+    if c.kind != ClKind::Text {
+        return false;
+    }
+    let Some(text) = pl.text.get(c.start..c.end) else { return false };
+    !text.is_empty()
+        && text.chars().all(|ch| {
+            ch.is_whitespace() || matches!(ch, ',' | '.' | ';' | ':' | '!' | '?' | '-' | '–' | '—' | '…' | '«' | '»' | '"' | '\'' | ')' | ']' | '*')
+        })
 }
 
 fn resolve_tab(pl: &mut ParaLayout, pending: &mut Option<(usize, TabStop, f32)>, xs: &mut [f32], c0: usize, x: f32, xo: &mut f32) {

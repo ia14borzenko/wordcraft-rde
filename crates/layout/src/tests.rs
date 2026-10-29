@@ -10689,6 +10689,45 @@ fn layout_cache_invalidates_on_changed_filepath() {
     assert_eq!(text_b, "/path/two/a.docx", "second layout with same cache shows /path/two/a.docx");
 }
 
+/// RDE ADR-0019: пунктуация после display-формулы (`,`/`.`/`;`) остаётся на строке формулы —
+/// «α = λ/d, … (1)» — и не уводит номер на отдельную строку.
+#[test]
+fn punctuation_after_display_equation_shares_its_line() {
+    use wordcraft_doc::props::{TabAlign, TabLeader, TabStop};
+    let text_width = 468.0f32;
+    let mut d = Document::from_text("");
+    let math = wordcraft_doc::math::Math { nodes: wordcraft_doc::math::parse_linear("a=b"), ..Default::default() };
+    let p = d.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    // «таб , таб (1)»: запятая — сразу после формулы (объект вставляется после первого таба).
+    p.insert_text(0, "\t,\t(1)", &Default::default()).unwrap();
+    p.insert_object(1, InlineObject::Equation { linear: "a=b".into(), display: true, math }, &Default::default()).unwrap();
+    p.props.tabs = Some(vec![
+        TabStop { pos: text_width / 2.0, align: TabAlign::Center, leader: TabLeader::None },
+        TabStop { pos: text_width, align: TabAlign::Right, leader: TabLeader::None },
+    ]);
+    let l = lay(&d);
+    let (para, x) = l.pages[0]
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Placed::Lines { para, x, .. } => Some((para, *x)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(para.lines.len(), 1, "формула, запятая и номер — в одной строке: {:?}", para.lines);
+    let line = &para.lines[0];
+    let formula = para.clusters.iter().position(|c| matches!(c.kind, crate::para::ClKind::Object(_))).expect("кластер формулы");
+    // Запятая — следующий после формулы текстовый кластер, до правого таба.
+    let comma = para.clusters.iter().position(|c| c.kind == crate::para::ClKind::Text).expect("кластер запятой");
+    assert_eq!(comma, formula + 1, "запятая сразу после формулы: {:?}", para.clusters);
+    let formula_right = x + line.xs[formula] + para.clusters[formula].adv;
+    let comma_x = x + line.xs[comma];
+    assert!(comma_x >= formula_right - 0.5, "запятая не наезжает на формулу: {comma_x} vs {formula_right}");
+    // Конец строки (правый край последнего кластера) — у правой границы текста.
+    let end = x + line.xs[line.c1 - line.c0];
+    assert!((end - (x + text_width)).abs() < 1.0, "номер прижат к правому полю: {end} vs {}", x + text_width);
+}
+
 /// RDE: display-формула в абзаце с табуляциями делит строку с номером — формула на центральном
 /// таб-стопе, номер `(1)` правым краем у правого таб-стопа (Word «Right-numbered» без таблицы;
 /// RDE ADR-0018). Раньше display-формула всегда уводилась на отдельную строку.
