@@ -2202,7 +2202,11 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
             }
             // A display equation sits on a line of its own.
             let is_display = pl.displays.iter().any(|(ci, _)| *ci == j);
-            if is_display && (c0..j).any(|k| pl.clusters.get(k).is_some_and(|c| c.kind != ClKind::Marker)) {
+            // RDE: right-numbered формула — display-формула в абзаце с табуляциями (центр + право)
+            // и номером `(n)` в конце строки (Word «Right-numbered» без таблицы). Табы перед
+            // формулой не разрывают строку; прочий текст — по-прежнему уводит формулу на свою строку.
+            let only_tabs_before = (c0..j).all(|k| pl.clusters.get(k).is_some_and(|c| matches!(c.kind, ClKind::Marker | ClKind::Tab)));
+            if is_display && !only_tabs_before && (c0..j).any(|k| pl.clusters.get(k).is_some_and(|c| c.kind != ClKind::Marker)) {
                 end = LineEnd::Wrap;
                 break;
             }
@@ -2337,6 +2341,11 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
                 while j < n && pl.clusters.get(j).is_some_and(|c| c.kind == ClKind::Marker) {
                     xs.push(x);
                     j += 1;
+                }
+                // RDE: номер `(n)` справа — после display-формулы строка продолжается табом
+                // (right-numbered без таблицы); таб уводит номер к правой границе текста.
+                if j < n && pl.clusters.get(j).is_some_and(|c| c.kind == ClKind::Tab) {
+                    continue;
                 }
                 end = if j >= n { LineEnd::Para } else { LineEnd::Wrap };
                 break;

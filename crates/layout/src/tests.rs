@@ -10688,3 +10688,41 @@ fn layout_cache_invalidates_on_changed_filepath() {
     let text_b = shown(&l_b);
     assert_eq!(text_b, "/path/two/a.docx", "second layout with same cache shows /path/two/a.docx");
 }
+
+/// RDE: display-формула в абзаце с табуляциями делит строку с номером — формула на центральном
+/// таб-стопе, номер `(1)` правым краем у правого таб-стопа (Word «Right-numbered» без таблицы;
+/// RDE ADR-0018). Раньше display-формула всегда уводилась на отдельную строку.
+#[test]
+fn a_display_equation_shares_a_line_with_its_right_number() {
+    use wordcraft_doc::props::{TabAlign, TabLeader, TabStop};
+    let text_width = 468.0f32;
+    let mut d = Document::from_text("");
+    let math = wordcraft_doc::math::Math { nodes: wordcraft_doc::math::parse_linear("a=b"), ..Default::default() };
+    let p = d.para_mut(StoryRef::Body, &Path::top(0)).unwrap();
+    p.insert_text(0, "\t\t(1)", &Default::default()).unwrap();
+    p.insert_object(1, InlineObject::Equation { linear: "a=b".into(), display: true, math }, &Default::default()).unwrap();
+    p.props.tabs = Some(vec![
+        TabStop { pos: text_width / 2.0, align: TabAlign::Center, leader: TabLeader::None },
+        TabStop { pos: text_width, align: TabAlign::Right, leader: TabLeader::None },
+    ]);
+    let l = lay(&d);
+    let (para, x) = l.pages[0]
+        .items
+        .iter()
+        .find_map(|it| match it {
+            Placed::Lines { para, x, .. } => Some((para, *x)),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(para.lines.len(), 1, "формула и номер — в одной строке: {:?}", para.lines);
+    assert_eq!(para.displays.len(), 1, "формула осталась display: {:?}", para.displays);
+    let line = &para.lines[0];
+    // Кластеры: таб, формула-объект, таб, «(1)».
+    assert_eq!(line.c0, 0);
+    let formula = para.clusters.iter().position(|c| matches!(c.kind, crate::para::ClKind::Object(_))).expect("кластер формулы");
+    let formula_center = x + line.xs[formula] + para.clusters[formula].adv / 2.0;
+    assert!((formula_center - (x + text_width / 2.0)).abs() < 1.0, "формула по центру текста: {formula_center} vs {}", x + text_width / 2.0);
+    // Конец строки (правый край последнего кластера) — у правой границы текста.
+    let end = x + line.xs[line.c1 - line.c0];
+    assert!((end - (x + text_width)).abs() < 1.0, "номер прижат к правому полю: {end} vs {}", x + text_width);
+}
